@@ -13,11 +13,11 @@ import {
   Save,
   X,
   GraduationCap,
-  FileText,
   BarChart3,
   ArrowUpDown,
   User,
-  Filter
+  Filter,
+  AlertTriangle
 } from 'lucide-react';
 
 // --- Constants & Config ---
@@ -202,7 +202,7 @@ const PlayerCard = ({ player, onDelete, minimal = false }) => {
               <button 
                 onClick={(e) => {
                   e.stopPropagation();
-                  if(confirm('Are you sure you want to delete this evaluation?')) onDelete(player.id);
+                  onDelete(player.id);
                 }}
                 className="flex items-center text-red-500 hover:text-red-700 text-sm font-medium px-3 py-1 rounded hover:bg-red-50 transition-colors"
               >
@@ -216,28 +216,62 @@ const PlayerCard = ({ player, onDelete, minimal = false }) => {
   );
 };
 
+const ConfirmModal = ({ isOpen, title, message, onConfirm, onCancel }) => {
+  if (!isOpen) return null;
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 z-[60] flex items-center justify-center p-4 animate-fade-in">
+      <div className="bg-white rounded-xl shadow-2xl max-w-sm w-full p-6">
+        <div className="flex items-center space-x-3 mb-4 text-amber-500">
+          <AlertTriangle size={32} />
+          <h3 className="text-xl font-bold text-slate-800">{title}</h3>
+        </div>
+        <p className="text-slate-600 mb-6">{message}</p>
+        <div className="flex space-x-3">
+          <button 
+            onClick={onCancel}
+            className="flex-1 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg font-medium transition-colors"
+          >
+            Cancel
+          </button>
+          <button 
+            onClick={onConfirm}
+            className="flex-1 px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg font-medium transition-colors"
+          >
+            Confirm
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // --- Main Application ---
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('eval');
   const [players, setPlayers] = useState([]);
   
-  // Sorting State for Results Tab
-  const [resultSort, setResultSort] = useState('score'); // 'score', 'name', 'grade', 'position'
-
-  // Report State
+  // Sorting & Data State
+  const [resultSort, setResultSort] = useState('score');
   const [reportType, setReportType] = useState('overall');
-
-  // Form State
   const [formData, setFormData] = useState(INITIAL_FORM_STATE);
   
-  // Eval Filter State (Updated)
+  // Eval Filter State
   const [filterMode, setFilterMode] = useState('all'); // 'all', 'grade', 'position'
   const [filterValue, setFilterValue] = useState('');
 
+  // UI State
   const [notification, setNotification] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
   const fileInputRef = useRef(null);
+  
+  // Modal State
+  const [confirmModal, setConfirmModal] = useState({ 
+    isOpen: false, 
+    title: '', 
+    message: '', 
+    action: null 
+  });
 
   // Load from local storage
   useEffect(() => {
@@ -316,8 +350,32 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  const handleDelete = (id) => {
-    setPlayers(prev => prev.filter(p => p.id !== id));
+  // --- Modal & Delete Logic ---
+
+  const initiateDelete = (id) => {
+    setConfirmModal({
+      isOpen: true,
+      title: 'Delete Evaluation?',
+      message: 'This will permanently remove this player\'s evaluation data. This action cannot be undone.',
+      action: () => {
+        setPlayers(prev => prev.filter(p => p.id !== id));
+        showNotification('Player deleted.', 'success');
+        setConfirmModal({ isOpen: false, title: '', message: '', action: null });
+      }
+    });
+  };
+
+  const initiateReset = () => {
+    setConfirmModal({
+      isOpen: true,
+      title: 'Reset All Data?',
+      message: 'WARNING: This will wipe ALL player data and evaluations. Ensure you have exported a CSV backup before proceeding.',
+      action: () => {
+        setPlayers([]);
+        showNotification('All data cleared.', 'success');
+        setConfirmModal({ isOpen: false, title: '', message: '', action: null });
+      }
+    });
   };
 
   // --- Helpers ---
@@ -503,6 +561,15 @@ export default function App() {
           <span className="font-medium">{notification.msg}</span>
         </div>
       )}
+
+      {/* Custom Confirmation Modal */}
+      <ConfirmModal 
+        isOpen={confirmModal.isOpen}
+        title={confirmModal.title}
+        message={confirmModal.message}
+        onConfirm={confirmModal.action}
+        onCancel={() => setConfirmModal({ ...confirmModal, isOpen: false })}
+      />
 
       <main className="max-w-md mx-auto p-4 md:max-w-4xl">
         
@@ -706,7 +773,7 @@ export default function App() {
                  <button onClick={() => generateCSV(players, 'hawkeye_full_data')} disabled={players.length === 0} className="flex items-center justify-center space-x-2 bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-50">
                   <Download size={16} /> <span className="hidden sm:inline">Export</span>
                 </button>
-                <button onClick={() => { if(confirm("Clear all data?")) setPlayers([]); }} disabled={players.length === 0} className="px-3 py-2 text-red-500 hover:bg-red-50 rounded-lg text-sm font-medium transition-colors border border-transparent hover:border-red-100">
+                <button onClick={initiateReset} disabled={players.length === 0} className="px-3 py-2 text-red-500 hover:bg-red-50 rounded-lg text-sm font-medium transition-colors border border-transparent hover:border-red-100">
                   Reset
                 </button>
               </div>
@@ -752,7 +819,7 @@ export default function App() {
                     key={player.id} 
                     player={player} 
                     rank={index + 1} 
-                    onDelete={handleDelete} 
+                    onDelete={initiateDelete} 
                   />
                 ))
               ) : (
