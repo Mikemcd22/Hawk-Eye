@@ -1,0 +1,837 @@
+import React, { useState, useEffect, useMemo } from 'react';
+import { initializeApp } from 'firebase/app';
+import { 
+  getAuth, 
+  onAuthStateChanged, 
+  signInAnonymously, 
+  signInWithCustomToken 
+} from 'firebase/auth';
+import { 
+  getFirestore, 
+  collection, 
+  addDoc, 
+  updateDoc, 
+  deleteDoc, 
+  doc, 
+  onSnapshot, 
+  serverTimestamp,
+  writeBatch
+} from 'firebase/firestore';
+import { 
+  Plus, 
+  Trash2, 
+  Download, 
+  ChevronDown, 
+  ChevronUp, 
+  Trophy, 
+  Search,
+  ArrowUpDown,
+  FileText,
+  X,
+  Upload,
+  Users
+} from 'lucide-react';
+
+// --- Firebase Configuration ---
+const firebaseConfig = JSON.parse(__firebase_config);
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+// --- Types & Constants ---
+const POSITIONS = ['All', 'Setter', 'Libero/DS', 'Outside', 'Opposite', 'Middle'];
+const GRADES = ['7', '8', '9', '10', '11', '12'];
+const SKILLS = [
+  { id: 'hit', label: 'Hitting' },
+  { id: 'pass', label: 'Passing' },
+  { id: 'defense', label: 'Defense' },
+  { id: 'serve', label: 'Serving' },
+  { id: 'voice', label: 'Voice/Presence' },
+  { id: 'potential', label: 'Potential to Improve' },
+];
+
+interface Player {
+  id: string;
+  name: string;
+  jersey: string;
+  position: string;
+  grade: string;
+  scores: Record<string, number>;
+  notes: string;
+  createdAt: any;
+}
+
+// --- Helpers ---
+const getAverageScore = (scores: Record<string, number> = {}) => {
+  const values = Object.values(scores);
+  if (values.length === 0) return 0;
+  return values.reduce((a, b) => a + b, 0) / values.length;
+};
+
+// --- Components ---
+
+// 1. Skill Rater Component
+const SkillRater = ({ label, value, onChange }: { label: string, value: number, onChange: (val: number) => void }) => {
+  return (
+    <div className="flex flex-col mb-4">
+      <div className="flex justify-between items-center mb-2">
+        <span className="text-sm font-medium text-slate-700">{label}</span>
+        <span className={`text-sm font-bold ${value > 0 ? 'text-blue-600' : 'text-slate-300'}`}>
+          {value > 0 ? value : '-'}
+        </span>
+      </div>
+      <div className="grid grid-cols-5 gap-1.5">
+        {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((score) => (
+          <button
+            key={score}
+            onClick={() => onChange(score)}
+            className={`h-9 rounded-md text-xs sm:text-sm font-bold transition-all shadow-sm border ${
+              value === score
+                ? 'bg-blue-600 text-white border-blue-600 transform scale-105 z-10'
+                : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-50 hover:border-slate-300'
+            }`}
+          >
+            {score}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+// 2. Player Card Component
+const PlayerCard = ({ player, onUpdate, onDelete }: { player: Player, onUpdate: (id: string, data: Partial<Player>) => void, onDelete: (id: string) => void }) => {
+  const [expanded, setExpanded] = useState(false);
+
+  const averageScore = getAverageScore(player.scores).toFixed(1);
+
+  const handleScoreChange = (skillId: string, score: number) => {
+    const newScores = { ...player.scores, [skillId]: score };
+    onUpdate(player.id, { scores: newScores });
+  };
+
+  const getScoreColor = (score: number) => {
+    if (score >= 8) return 'text-green-600';
+    if (score >= 6) return 'text-blue-600';
+    if (score >= 4) return 'text-yellow-600';
+    return 'text-slate-600';
+  };
+
+  return (
+    <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden mb-4">
+      {/* Card Header */}
+      <div 
+        className="p-4 flex items-center justify-between cursor-pointer active:bg-slate-50 touch-manipulation"
+        onClick={() => setExpanded(!expanded)}
+      >
+        <div className="flex items-center gap-3">
+          <div className="h-10 w-10 bg-blue-100 text-blue-700 rounded-full flex items-center justify-center font-bold text-lg shrink-0">
+            {player.jersey || '#'}
+          </div>
+          <div>
+            <h3 className="font-bold text-slate-800 leading-tight">{player.name}</h3>
+            <div className="flex items-center gap-2 mt-1">
+              <span className="text-xs font-semibold bg-slate-100 text-slate-600 px-2 py-0.5 rounded">
+                {player.position}
+              </span>
+              {player.grade && (
+                 <span className="text-xs font-semibold bg-slate-100 text-slate-600 px-2 py-0.5 rounded">
+                   Gr: {player.grade}
+                 </span>
+              )}
+            </div>
+          </div>
+        </div>
+        
+        <div className="flex items-center gap-3">
+          <div className="text-right">
+            <div className="text-xs text-slate-400">Avg</div>
+            <div className={`font-bold text-lg ${getScoreColor(Number(averageScore))}`}>
+              {averageScore}
+            </div>
+          </div>
+          {expanded ? <ChevronUp className="w-5 h-5 text-slate-400" /> : <ChevronDown className="w-5 h-5 text-slate-400" />}
+        </div>
+      </div>
+
+      {/* Expanded Content */}
+      {expanded && (
+        <div className="bg-slate-50 p-4 border-t border-slate-100">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-2 mb-4">
+            {SKILLS.map((skill) => (
+              <SkillRater
+                key={skill.id}
+                label={skill.label}
+                value={player.scores?.[skill.id] || 0}
+                onChange={(val) => handleScoreChange(skill.id, val)}
+              />
+            ))}
+          </div>
+          
+          <div className="mb-4">
+            <label className="text-xs font-bold text-slate-500 uppercase mb-1 block">Coach Notes</label>
+            <textarea
+              className="w-full p-2 text-sm border border-slate-300 rounded-md focus:ring-2 focus:ring-blue-500 outline-none"
+              rows={2}
+              placeholder="Hustle, leadership, mechanics..."
+              value={player.notes || ''}
+              onChange={(e) => onUpdate(player.id, { notes: e.target.value })}
+            />
+          </div>
+
+          <div className="flex justify-between items-center pt-2">
+            <div className="text-xs text-slate-400">
+              Grade: {player.grade || 'N/A'}
+            </div>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                if (confirm('Delete this player?')) onDelete(player.id);
+              }}
+              className="flex items-center gap-2 text-red-500 text-sm hover:bg-red-50 px-3 py-1.5 rounded-md transition-colors"
+            >
+              <Trash2 className="w-4 h-4" />
+              Remove Player
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// --- Main Application ---
+export default function App() {
+  const [user, setUser] = useState<any>(null);
+  const [players, setPlayers] = useState<Player[]>([]);
+  const [loading, setLoading] = useState(true);
+  
+  // UI State
+  const [isAdding, setIsAdding] = useState(false);
+  const [showReports, setShowReports] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
+  const [importError, setImportError] = useState('');
+  
+  // Form State
+  const [newName, setNewName] = useState('');
+  const [newJersey, setNewJersey] = useState('');
+  const [newPosition, setNewPosition] = useState('Outside');
+  const [newGrade, setNewGrade] = useState('9');
+
+  // Filter & Sort State
+  const [filterPos, setFilterPos] = useState('All');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [sortBy, setSortBy] = useState('name'); 
+
+  // Report State
+  const [activeReport, setActiveReport] = useState('position_rank');
+
+  const REPORT_TYPES = useMemo(() => [
+    { id: 'position_rank', label: 'Position Rank (Pos > Score)' },
+    { id: 'top_rated', label: 'Top Rated (Highest Score)' },
+    { id: 'grade_rank', label: 'Grade Rank (Grade > Score)' },
+    ...SKILLS.map(s => ({ id: `skill_${s.id}`, label: `Top ${s.label}` }))
+  ], []);
+
+  // 1. Auth Setup
+  useEffect(() => {
+    const initAuth = async () => {
+      if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+        await signInWithCustomToken(auth, __initial_auth_token);
+      } else {
+        await signInAnonymously(auth);
+      }
+    };
+    initAuth();
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
+      setUser(u);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // 2. Data Sync (UPDATED FOR SHARED ACCESS)
+  useEffect(() => {
+    if (!user) return;
+    
+    // UPDATED: Use public/data/players so all coaches share the same list
+    const collRef = collection(db, 'artifacts', appId, 'public', 'data', 'players');
+    
+    const unsubscribe = onSnapshot(collRef, (snapshot) => {
+      const loadedPlayers: Player[] = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })) as Player[];
+      
+      setPlayers(loadedPlayers);
+      setLoading(false);
+    }, (error) => {
+      console.error("Error fetching players:", error);
+      setLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, [user]);
+
+  // Handlers
+  const handleAddPlayer = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user || !newName || !newJersey) return;
+
+    try {
+      // UPDATED: Write to public collection
+      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'players'), {
+        name: newName,
+        jersey: newJersey,
+        position: newPosition,
+        grade: newGrade,
+        scores: {},
+        notes: '',
+        createdAt: serverTimestamp()
+      });
+      setNewName('');
+      setNewJersey('');
+      setNewGrade('9');
+      setIsAdding(false);
+    } catch (err) {
+      console.error("Error adding player", err);
+    }
+  };
+
+  const handleUpdatePlayer = async (id: string, data: Partial<Player>) => {
+    if (!user) return;
+    try {
+      // UPDATED: Update in public collection
+      const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'players', id);
+      await updateDoc(docRef, data);
+    } catch (err) {
+      console.error("Error updating", err);
+    }
+  };
+
+  const handleDeletePlayer = async (id: string) => {
+    if (!user) return;
+    try {
+      // UPDATED: Delete from public collection
+      await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'players', id));
+    } catch (err) {
+      console.error("Error deleting", err);
+    }
+  };
+
+  const handleImportCSV = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!user || !e.target.files?.[0]) return;
+    setImportError('');
+    
+    const file = e.target.files[0];
+    const reader = new FileReader();
+
+    reader.onload = async (event) => {
+      try {
+        const text = event.target?.result as string;
+        const lines = text.split(/\r\n|\n/).filter(line => line.trim());
+        
+        if (lines.length < 2) {
+          setImportError("File appears empty. Need headers: Name, Jersey, Position, Grade");
+          return;
+        }
+
+        const headers = lines[0].toLowerCase().split(',').map(h => h.trim().replace(/^"|"$/g, ''));
+        const nameIdx = headers.findIndex(h => h.includes('name'));
+        const jerseyIdx = headers.findIndex(h => h.includes('jersey') || h.includes('#'));
+        const posIdx = headers.findIndex(h => h.includes('pos'));
+        const gradeIdx = headers.findIndex(h => h.includes('grade'));
+
+        if (nameIdx === -1) {
+          setImportError("Missing 'Name' column.");
+          return;
+        }
+
+        const newPlayersData: any[] = [];
+        
+        for (let i = 1; i < lines.length; i++) {
+          const row = lines[i].split(',').map(c => c.trim().replace(/^"|"$/g, ''));
+          if (row.length <= nameIdx) continue;
+
+          const name = row[nameIdx];
+          const jersey = jerseyIdx > -1 ? row[jerseyIdx] : '?';
+          let position = posIdx > -1 ? row[posIdx] : 'Outside';
+          let grade = gradeIdx > -1 ? row[gradeIdx] : '9';
+
+          const matchedPos = POSITIONS.find(p => p.toLowerCase() === position.toLowerCase());
+          if (matchedPos) position = matchedPos;
+          else if (!POSITIONS.includes(position)) position = 'Outside';
+
+          newPlayersData.push({
+            name,
+            jersey,
+            position,
+            grade,
+            scores: {},
+            notes: '',
+            createdAt: serverTimestamp()
+          });
+        }
+
+        const batch = writeBatch(db);
+        // UPDATED: Import to public collection
+        const playerCollection = collection(db, 'artifacts', appId, 'public', 'data', 'players');
+        const uploadBatch = newPlayersData.slice(0, 400); 
+
+        uploadBatch.forEach(playerData => {
+           const newDocRef = doc(playerCollection);
+           batch.set(newDocRef, playerData);
+        });
+
+        await batch.commit();
+        setIsImporting(false);
+        alert(`Imported ${uploadBatch.length} players to the Team Roster.`);
+
+      } catch (err) {
+        console.error("CSV Import Error", err);
+        setImportError("Failed to process file.");
+      }
+    };
+
+    reader.readAsText(file);
+  };
+
+  // Generic CSV Export
+  const downloadCSV = (data: Player[], filename: string) => {
+    const headers = ['Name', 'Grade', 'Jersey', 'Position', ...SKILLS.map(s => s.label), 'Average', 'Notes'];
+    const csvContent = [
+      headers.join(','),
+      ...data.map(p => {
+        const scores = SKILLS.map(s => p.scores?.[s.id] || 0);
+        const avg = getAverageScore(p.scores);
+        const safeNotes = `"${(p.notes || '').replace(/"/g, '""')}"`;
+        return [
+          p.name,
+          p.grade || '',
+          p.jersey,
+          p.position,
+          ...scores,
+          avg.toFixed(2),
+          safeNotes
+        ].join(',');
+      })
+    ].join('\n');
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    if (link.download !== undefined) {
+      const url = URL.createObjectURL(blob);
+      link.setAttribute('href', url);
+      link.setAttribute('download', filename);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    }
+  };
+
+  // Logic: Filtering & Sorting
+  const filteredAndSortedPlayers = useMemo(() => {
+    let result = players.filter(p => {
+      const matchesPos = filterPos === 'All' || p.position === filterPos;
+      const matchesSearch = p.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
+                            p.jersey.includes(searchQuery);
+      return matchesPos && matchesSearch;
+    });
+
+    result.sort((a, b) => {
+      if (sortBy === 'grade') {
+        return Number(a.grade || 0) - Number(b.grade || 0);
+      } else if (sortBy === 'position') {
+        return a.position.localeCompare(b.position);
+      } else if (sortBy === 'jersey') {
+        return (parseInt(a.jersey) || 0) - (parseInt(b.jersey) || 0);
+      } else {
+        const lastA = a.name.trim().split(' ').pop() || '';
+        const lastB = b.name.trim().split(' ').pop() || '';
+        return lastA.localeCompare(lastB);
+      }
+    });
+
+    return result;
+  }, [players, filterPos, searchQuery, sortBy]);
+
+  // Logic: Reports
+  const reportData = useMemo(() => {
+    let data = [...players];
+    switch (activeReport) {
+      case 'position_rank':
+        return data.sort((a, b) => {
+          const posDiff = a.position.localeCompare(b.position);
+          if (posDiff !== 0) return posDiff;
+          return getAverageScore(b.scores) - getAverageScore(a.scores);
+        });
+      case 'top_rated':
+        return data.sort((a, b) => getAverageScore(b.scores) - getAverageScore(a.scores));
+      case 'grade_rank':
+        return data.sort((a, b) => {
+          const gradeDiff = (Number(a.grade) || 0) - (Number(b.grade) || 0);
+          if (gradeDiff !== 0) return gradeDiff;
+          return getAverageScore(b.scores) - getAverageScore(a.scores);
+        });
+      default:
+        if (activeReport.startsWith('skill_')) {
+          const skillId = activeReport.replace('skill_', '');
+          return data.sort((a, b) => (b.scores[skillId] || 0) - (a.scores[skillId] || 0));
+        }
+        return data;
+    }
+  }, [players, activeReport]);
+
+
+  if (loading) return <div className="flex h-screen items-center justify-center text-slate-400">Loading Team Roster...</div>;
+
+  return (
+    <div className="min-h-screen bg-slate-100 font-sans text-slate-900 pb-20">
+      {/* Navbar */}
+      <div className="bg-blue-700 text-white p-4 shadow-lg sticky top-0 z-10">
+        <div className="max-w-2xl mx-auto flex justify-between items-center">
+          <div className="flex items-center gap-2">
+            <Trophy className="w-6 h-6 text-yellow-300" />
+            <h1 className="text-xl font-bold tracking-tight">Hawk-Eye</h1>
+            <span className="text-xs bg-blue-800 px-2 py-0.5 rounded-full text-blue-200 border border-blue-600">Team Mode</span>
+          </div>
+          <div className="flex gap-2">
+            <button 
+              onClick={() => setIsImporting(true)}
+              className="bg-blue-600 hover:bg-blue-500 p-2 rounded-full transition-colors flex items-center gap-2"
+              title="Import Players (CSV)"
+            >
+              <Upload className="w-5 h-5" />
+            </button>
+            <button 
+              onClick={() => setShowReports(true)}
+              className="bg-blue-600 hover:bg-blue-500 p-2 rounded-full transition-colors flex items-center gap-2"
+              title="Reports"
+            >
+              <FileText className="w-5 h-5" />
+            </button>
+            <button 
+              onClick={() => downloadCSV(filteredAndSortedPlayers, `roster_export.csv`)}
+              className="bg-blue-600 hover:bg-blue-500 p-2 rounded-full transition-colors"
+              title="Export Current View"
+            >
+              <Download className="w-5 h-5" />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="max-w-2xl mx-auto p-4">
+        
+        {/* Stats Summary */}
+        <div className="grid grid-cols-2 gap-4 mb-6">
+          <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200">
+            <div className="text-sm text-slate-500">Total Players</div>
+            <div className="text-2xl font-bold text-slate-800">{players.length}</div>
+          </div>
+          <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200">
+            <div className="text-sm text-slate-500">Evaluations</div>
+            <div className="text-2xl font-bold text-blue-600">
+              {players.reduce((acc, p) => acc + Object.keys(p.scores || {}).length, 0)}
+            </div>
+          </div>
+        </div>
+
+        {/* Filters */}
+        <div className="flex gap-2 mb-6 overflow-x-auto pb-2 scrollbar-hide">
+          {POSITIONS.map(pos => (
+            <button
+              key={pos}
+              onClick={() => setFilterPos(pos)}
+              className={`px-4 py-1.5 rounded-full text-sm font-medium whitespace-nowrap transition-colors ${
+                filterPos === pos 
+                  ? 'bg-blue-600 text-white shadow-md' 
+                  : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50'
+              }`}
+            >
+              {pos}
+            </button>
+          ))}
+        </div>
+
+        {/* Search & Sort Controls */}
+        <div className="flex gap-2 mb-6">
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-slate-400 w-5 h-5" />
+            <input
+              type="text"
+              placeholder="Search..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full pl-10 pr-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-blue-500 outline-none shadow-sm"
+            />
+          </div>
+          
+          <div className="relative w-1/3 min-w-[130px]">
+            <div className="absolute left-3 top-1/2 transform -translate-y-1/2 pointer-events-none">
+              <ArrowUpDown className="w-4 h-4 text-slate-400" />
+            </div>
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value)}
+              className="w-full pl-9 pr-8 py-3 bg-white rounded-xl border border-slate-200 focus:ring-2 focus:ring-blue-500 outline-none shadow-sm appearance-none text-sm font-medium text-slate-700"
+            >
+              <option value="name">Last Name</option>
+              <option value="jersey">Jersey #</option>
+              <option value="grade">Grade</option>
+              <option value="position">Position</option>
+            </select>
+            <ChevronDown className="absolute right-3 top-1/2 transform -translate-y-1/2 text-slate-400 w-4 h-4 pointer-events-none" />
+          </div>
+        </div>
+
+        {/* Player List */}
+        <div className="space-y-4">
+          {filteredAndSortedPlayers.length === 0 ? (
+            <div className="text-center py-10 text-slate-400">
+              {players.length === 0 ? "No players yet. Add one to start!" : "No players match your search."}
+            </div>
+          ) : (
+            filteredAndSortedPlayers.map(player => (
+              <PlayerCard 
+                key={player.id} 
+                player={player} 
+                onUpdate={handleUpdatePlayer} 
+                onDelete={handleDeletePlayer} 
+              />
+            ))
+          )}
+        </div>
+      </div>
+
+      {/* Floating Action Button */}
+      <button
+        onClick={() => setIsAdding(true)}
+        className="fixed bottom-6 right-6 bg-blue-600 hover:bg-blue-700 text-white p-4 rounded-full shadow-xl transition-all transform hover:scale-105 active:scale-95 z-20"
+      >
+        <Plus className="w-6 h-6" />
+      </button>
+
+      {/* Reports Modal */}
+      {showReports && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl w-full max-w-4xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden">
+            {/* Modal Header */}
+            <div className="p-4 border-b border-slate-200 flex justify-between items-center bg-slate-50">
+              <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
+                <FileText className="w-5 h-5 text-blue-600" /> Reports Center
+              </h2>
+              <button onClick={() => setShowReports(false)} className="text-slate-400 hover:text-slate-600">
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+
+            <div className="flex flex-col md:flex-row flex-1 overflow-hidden">
+              {/* Sidebar */}
+              <div className="w-full md:w-64 bg-slate-50 border-r border-slate-200 overflow-y-auto p-4 space-y-2">
+                {REPORT_TYPES.map(type => (
+                  <button
+                    key={type.id}
+                    onClick={() => setActiveReport(type.id)}
+                    className={`w-full text-left px-4 py-3 rounded-lg text-sm font-medium transition-colors ${
+                      activeReport === type.id
+                        ? 'bg-blue-100 text-blue-700 shadow-sm'
+                        : 'text-slate-600 hover:bg-slate-200'
+                    }`}
+                  >
+                    {type.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Report Content */}
+              <div className="flex-1 flex flex-col overflow-hidden bg-white">
+                <div className="p-4 border-b border-slate-200 flex justify-between items-center">
+                  <div className="text-sm text-slate-500">
+                    Showing {reportData.length} records
+                  </div>
+                  <button 
+                    onClick={() => downloadCSV(reportData, `${activeReport}_export.csv`)}
+                    className="flex items-center gap-2 text-sm bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-md transition-colors"
+                  >
+                    <Download className="w-4 h-4" /> Export Report
+                  </button>
+                </div>
+                
+                <div className="flex-1 overflow-y-auto p-4">
+                   <div className="min-w-full inline-block align-middle">
+                    <div className="border rounded-lg overflow-hidden">
+                      <table className="min-w-full divide-y divide-slate-200">
+                        <thead className="bg-slate-50">
+                          <tr>
+                            <th className="px-3 py-3 text-left text-xs font-bold text-slate-500 uppercase">Rank</th>
+                            <th className="px-3 py-3 text-left text-xs font-bold text-slate-500 uppercase">Name</th>
+                            <th className="px-3 py-3 text-left text-xs font-bold text-slate-500 uppercase">#</th>
+                            <th className="px-3 py-3 text-left text-xs font-bold text-slate-500 uppercase">Pos</th>
+                            <th className="px-3 py-3 text-left text-xs font-bold text-slate-500 uppercase">Gr</th>
+                            <th className="px-3 py-3 text-right text-xs font-bold text-slate-500 uppercase">
+                              {activeReport.startsWith('skill_') ? 'Score' : 'Avg'}
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-200 bg-white">
+                          {reportData.map((player, idx) => {
+                             let scoreDisplay = 0;
+                             if (activeReport.startsWith('skill_')) {
+                               const skillId = activeReport.replace('skill_', '');
+                               scoreDisplay = player.scores[skillId] || 0;
+                             } else {
+                               scoreDisplay = Number(getAverageScore(player.scores).toFixed(1));
+                             }
+
+                             return (
+                              <tr key={player.id} className="hover:bg-slate-50">
+                                <td className="px-3 py-3 text-sm text-slate-500 font-mono">{idx + 1}</td>
+                                <td className="px-3 py-3 text-sm font-medium text-slate-900">{player.name}</td>
+                                <td className="px-3 py-3 text-sm text-slate-500">{player.jersey}</td>
+                                <td className="px-3 py-3 text-sm text-slate-500">{player.position}</td>
+                                <td className="px-3 py-3 text-sm text-slate-500">{player.grade}</td>
+                                <td className={`px-3 py-3 text-sm font-bold text-right ${scoreDisplay >= 8 ? 'text-green-600' : scoreDisplay >= 6 ? 'text-blue-600' : 'text-slate-600'}`}>
+                                  {scoreDisplay}
+                                </td>
+                              </tr>
+                             );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Import CSV Modal */}
+      {isImporting && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl w-full max-w-md p-6 shadow-2xl animate-in fade-in zoom-in duration-200">
+            <h2 className="text-xl font-bold text-slate-800 mb-2">Import Players</h2>
+            <p className="text-sm text-slate-500 mb-6">
+              Upload a .csv file. The first row must contain headers: <strong>Name, Jersey, Position, Grade</strong>.
+            </p>
+            
+            {importError && (
+              <div className="mb-4 p-3 bg-red-50 text-red-600 text-sm rounded-lg border border-red-100">
+                {importError}
+              </div>
+            )}
+
+            <div className="mb-6">
+              <label className="block w-full p-4 border-2 border-dashed border-slate-300 rounded-xl text-center cursor-pointer hover:border-blue-500 hover:bg-blue-50 transition-colors">
+                <input 
+                  type="file" 
+                  accept=".csv" 
+                  onChange={handleImportCSV} 
+                  className="hidden" 
+                />
+                <div className="flex flex-col items-center gap-2">
+                  <Upload className="w-8 h-8 text-slate-400" />
+                  <span className="text-sm font-medium text-slate-600">Click to Select CSV File</span>
+                </div>
+              </label>
+            </div>
+
+            <div className="flex justify-end">
+              <button
+                onClick={() => { setIsImporting(false); setImportError(''); }}
+                className="px-4 py-2 text-slate-600 font-medium hover:bg-slate-50 rounded-lg transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Add Player Modal */}
+      {isAdding && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl w-full max-w-md p-6 shadow-2xl animate-in fade-in zoom-in duration-200">
+            <h2 className="text-xl font-bold text-slate-800 mb-4">Add New Player</h2>
+            <form onSubmit={handleAddPlayer}>
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-slate-600 mb-1">Full Name</label>
+                  <input
+                    autoFocus
+                    type="text"
+                    required
+                    className="w-full p-3 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+                    placeholder="e.g. Sarah Smith"
+                    value={newName}
+                    onChange={(e) => setNewName(e.target.value)}
+                  />
+                </div>
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="col-span-1">
+                    <label className="block text-sm font-medium text-slate-600 mb-1">Jersey #</label>
+                    <input
+                      type="text"
+                      required
+                      className="w-full p-3 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+                      placeholder="12"
+                      value={newJersey}
+                      onChange={(e) => setNewJersey(e.target.value)}
+                    />
+                  </div>
+                  <div className="col-span-1">
+                    <label className="block text-sm font-medium text-slate-600 mb-1">Grade</label>
+                    <div className="relative">
+                      <select
+                        className="w-full p-3 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none appearance-none"
+                        value={newGrade}
+                        onChange={(e) => setNewGrade(e.target.value)}
+                      >
+                        {GRADES.map(g => (
+                          <option key={g} value={g}>{g}</option>
+                        ))}
+                      </select>
+                      <ChevronDown className="absolute right-2 top-1/2 transform -translate-y-1/2 text-slate-400 w-4 h-4 pointer-events-none" />
+                    </div>
+                  </div>
+                  <div className="col-span-1">
+                    <label className="block text-sm font-medium text-slate-600 mb-1">Pos</label>
+                    <div className="relative">
+                      <select
+                        className="w-full p-3 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none appearance-none"
+                        value={newPosition}
+                        onChange={(e) => setNewPosition(e.target.value)}
+                      >
+                        {POSITIONS.filter(p => p !== 'All').map(p => (
+                          <option key={p} value={p}>{p}</option>
+                        ))}
+                      </select>
+                      <ChevronDown className="absolute right-2 top-1/2 transform -translate-y-1/2 text-slate-400 w-4 h-4 pointer-events-none" />
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div className="flex gap-3 mt-8">
+                <button
+                  type="button"
+                  onClick={() => setIsAdding(false)}
+                  className="flex-1 py-3 text-slate-600 font-medium hover:bg-slate-50 rounded-lg transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="flex-1 py-3 bg-blue-600 text-white font-bold rounded-lg hover:bg-blue-700 shadow-md transition-all"
+                >
+                  Add Player
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
