@@ -3,8 +3,7 @@ import { initializeApp } from 'firebase/app';
 import { 
   getAuth, 
   onAuthStateChanged, 
-  signInAnonymously, 
-  signInWithCustomToken 
+  signInAnonymously 
 } from 'firebase/auth';
 import { 
   getFirestore, 
@@ -28,16 +27,33 @@ import {
   ArrowUpDown,
   FileText,
   X,
-  Upload,
-  Users
+  Upload
 } from 'lucide-react';
 
 // --- Firebase Configuration ---
-const firebaseConfig = JSON.parse(__firebase_config);
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+// TODO: When running locally with Vite, create a .env file and use import.meta.env variables.
+// For now, these are placeholders to ensure the file compiles safely.
+const firebaseConfig = {
+  apiKey: "YOUR_API_KEY_HERE", // e.g. import.meta.env.VITE_FIREBASE_API_KEY
+  authDomain: "YOUR_AUTH_DOMAIN_HERE",
+  projectId: "YOUR_PROJECT_ID_HERE",
+  storageBucket: "YOUR_STORAGE_BUCKET_HERE",
+  messagingSenderId: "YOUR_SENDER_ID_HERE",
+  appId: "YOUR_APP_ID_HERE"
+};
+
+// Initialize Firebase
+// We check if api key exists/is valid to prevent crash during initial setup
+let app, auth, db;
+try {
+  if (firebaseConfig.apiKey !== "YOUR_API_KEY_HERE") {
+    app = initializeApp(firebaseConfig);
+    auth = getAuth(app);
+    db = getFirestore(app);
+  }
+} catch (e) {
+  console.log("Firebase not initialized yet (using placeholders).");
+}
 
 // --- Types & Constants ---
 const POSITIONS = ['All', 'Setter', 'Libero/DS', 'Outside', 'Opposite', 'Middle'];
@@ -64,7 +80,8 @@ interface Player {
 
 // --- Helpers ---
 const getAverageScore = (scores: Record<string, number> = {}) => {
-  const values = Object.values(scores);
+  if (!scores || typeof scores !== 'object') return 0;
+  const values = Object.values(scores).filter(v => typeof v === 'number');
   if (values.length === 0) return 0;
   return values.reduce((a, b) => a + b, 0) / values.length;
 };
@@ -107,7 +124,7 @@ const PlayerCard = ({ player, onUpdate, onDelete }: { player: Player, onUpdate: 
   const averageScore = getAverageScore(player.scores).toFixed(1);
 
   const handleScoreChange = (skillId: string, score: number) => {
-    const newScores = { ...player.scores, [skillId]: score };
+    const newScores = { ...(player.scores || {}), [skillId]: score };
     onUpdate(player.id, { scores: newScores });
   };
 
@@ -237,25 +254,31 @@ export default function App() {
   // 1. Auth Setup
   useEffect(() => {
     const initAuth = async () => {
-      if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-        await signInWithCustomToken(auth, __initial_auth_token);
-      } else {
-        await signInAnonymously(auth);
+      try {
+        if (auth) {
+            await signInAnonymously(auth);
+        }
+      } catch (error) {
+        console.error("Auth Error:", error);
       }
     };
     initAuth();
-    const unsubscribe = onAuthStateChanged(auth, (u) => {
-      setUser(u);
-    });
+    
+    let unsubscribe = () => {};
+    if (auth) {
+        unsubscribe = onAuthStateChanged(auth, (u) => {
+          setUser(u);
+        });
+    }
     return () => unsubscribe();
   }, []);
 
-  // 2. Data Sync (UPDATED FOR SHARED ACCESS)
+  // 2. Data Sync
   useEffect(() => {
-    if (!user) return;
+    if (!user || !db) return;
     
-    // UPDATED: Use public/data/players so all coaches share the same list
-    const collRef = collection(db, 'artifacts', appId, 'public', 'data', 'players');
+    // Standard Firestore Path
+    const collRef = collection(db, 'players');
     
     const unsubscribe = onSnapshot(collRef, (snapshot) => {
       const loadedPlayers: Player[] = snapshot.docs.map(doc => ({
@@ -276,11 +299,10 @@ export default function App() {
   // Handlers
   const handleAddPlayer = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!user || !newName || !newJersey) return;
+    if (!user || !newName || !newJersey || !db) return;
 
     try {
-      // UPDATED: Write to public collection
-      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'players'), {
+      await addDoc(collection(db, 'players'), {
         name: newName,
         jersey: newJersey,
         position: newPosition,
@@ -299,10 +321,9 @@ export default function App() {
   };
 
   const handleUpdatePlayer = async (id: string, data: Partial<Player>) => {
-    if (!user) return;
+    if (!user || !db) return;
     try {
-      // UPDATED: Update in public collection
-      const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'players', id);
+      const docRef = doc(db, 'players', id);
       await updateDoc(docRef, data);
     } catch (err) {
       console.error("Error updating", err);
@@ -310,17 +331,16 @@ export default function App() {
   };
 
   const handleDeletePlayer = async (id: string) => {
-    if (!user) return;
+    if (!user || !db) return;
     try {
-      // UPDATED: Delete from public collection
-      await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'players', id));
+      await deleteDoc(doc(db, 'players', id));
     } catch (err) {
       console.error("Error deleting", err);
     }
   };
 
   const handleImportCSV = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!user || !e.target.files?.[0]) return;
+    if (!user || !e.target.files?.[0] || !db) return;
     setImportError('');
     
     const file = e.target.files[0];
@@ -353,10 +373,10 @@ export default function App() {
           const row = lines[i].split(',').map(c => c.trim().replace(/^"|"$/g, ''));
           if (row.length <= nameIdx) continue;
 
-          const name = row[nameIdx];
-          const jersey = jerseyIdx > -1 ? row[jerseyIdx] : '?';
-          let position = posIdx > -1 ? row[posIdx] : 'Outside';
-          let grade = gradeIdx > -1 ? row[gradeIdx] : '9';
+          const name = row[nameIdx] || 'Unknown';
+          const jersey = jerseyIdx > -1 ? (row[jerseyIdx] || '?') : '?';
+          let position = posIdx > -1 ? (row[posIdx] || 'Outside') : 'Outside';
+          let grade = gradeIdx > -1 ? (row[gradeIdx] || '9') : '9';
 
           const matchedPos = POSITIONS.find(p => p.toLowerCase() === position.toLowerCase());
           if (matchedPos) position = matchedPos;
@@ -374,8 +394,7 @@ export default function App() {
         }
 
         const batch = writeBatch(db);
-        // UPDATED: Import to public collection
-        const playerCollection = collection(db, 'artifacts', appId, 'public', 'data', 'players');
+        const playerCollection = collection(db, 'players');
         const uploadBatch = newPlayersData.slice(0, 400); 
 
         uploadBatch.forEach(playerData => {
@@ -396,7 +415,6 @@ export default function App() {
     reader.readAsText(file);
   };
 
-  // Generic CSV Export
   const downloadCSV = (data: Player[], filename: string) => {
     const headers = ['Name', 'Grade', 'Jersey', 'Position', ...SKILLS.map(s => s.label), 'Average', 'Notes'];
     const csvContent = [
@@ -429,7 +447,6 @@ export default function App() {
     }
   };
 
-  // Logic: Filtering & Sorting
   const filteredAndSortedPlayers = useMemo(() => {
     let result = players.filter(p => {
       const matchesPos = filterPos === 'All' || p.position === filterPos;
@@ -455,7 +472,6 @@ export default function App() {
     return result;
   }, [players, filterPos, searchQuery, sortBy]);
 
-  // Logic: Reports
   const reportData = useMemo(() => {
     let data = [...players];
     switch (activeReport) {
@@ -476,18 +492,23 @@ export default function App() {
       default:
         if (activeReport.startsWith('skill_')) {
           const skillId = activeReport.replace('skill_', '');
-          return data.sort((a, b) => (b.scores[skillId] || 0) - (a.scores[skillId] || 0));
+          return data.sort((a, b) => (b.scores?.[skillId] || 0) - (a.scores?.[skillId] || 0));
         }
         return data;
     }
   }, [players, activeReport]);
 
-
+  if (!db && loading) {
+      return <div className="flex flex-col h-screen items-center justify-center text-slate-400 gap-4">
+          <p>Please configure your Firebase keys in the code.</p>
+          <div className="text-xs font-mono bg-slate-200 p-2 rounded">src/App.tsx line 35</div>
+      </div>;
+  }
+  
   if (loading) return <div className="flex h-screen items-center justify-center text-slate-400">Loading Team Roster...</div>;
 
   return (
     <div className="min-h-screen bg-slate-100 font-sans text-slate-900 pb-20">
-      {/* Navbar */}
       <div className="bg-blue-700 text-white p-4 shadow-lg sticky top-0 z-10">
         <div className="max-w-2xl mx-auto flex justify-between items-center">
           <div className="flex items-center gap-2">
@@ -522,8 +543,6 @@ export default function App() {
       </div>
 
       <div className="max-w-2xl mx-auto p-4">
-        
-        {/* Stats Summary */}
         <div className="grid grid-cols-2 gap-4 mb-6">
           <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200">
             <div className="text-sm text-slate-500">Total Players</div>
@@ -537,7 +556,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* Filters */}
         <div className="flex gap-2 mb-6 overflow-x-auto pb-2 scrollbar-hide">
           {POSITIONS.map(pos => (
             <button
@@ -554,7 +572,6 @@ export default function App() {
           ))}
         </div>
 
-        {/* Search & Sort Controls */}
         <div className="flex gap-2 mb-6">
           <div className="relative flex-1">
             <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-slate-400 w-5 h-5" />
@@ -585,7 +602,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* Player List */}
         <div className="space-y-4">
           {filteredAndSortedPlayers.length === 0 ? (
             <div className="text-center py-10 text-slate-400">
@@ -604,7 +620,6 @@ export default function App() {
         </div>
       </div>
 
-      {/* Floating Action Button */}
       <button
         onClick={() => setIsAdding(true)}
         className="fixed bottom-6 right-6 bg-blue-600 hover:bg-blue-700 text-white p-4 rounded-full shadow-xl transition-all transform hover:scale-105 active:scale-95 z-20"
@@ -612,11 +627,9 @@ export default function App() {
         <Plus className="w-6 h-6" />
       </button>
 
-      {/* Reports Modal */}
       {showReports && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
           <div className="bg-white rounded-2xl w-full max-w-4xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden">
-            {/* Modal Header */}
             <div className="p-4 border-b border-slate-200 flex justify-between items-center bg-slate-50">
               <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
                 <FileText className="w-5 h-5 text-blue-600" /> Reports Center
@@ -627,7 +640,6 @@ export default function App() {
             </div>
 
             <div className="flex flex-col md:flex-row flex-1 overflow-hidden">
-              {/* Sidebar */}
               <div className="w-full md:w-64 bg-slate-50 border-r border-slate-200 overflow-y-auto p-4 space-y-2">
                 {REPORT_TYPES.map(type => (
                   <button
@@ -644,7 +656,6 @@ export default function App() {
                 ))}
               </div>
 
-              {/* Report Content */}
               <div className="flex-1 flex flex-col overflow-hidden bg-white">
                 <div className="p-4 border-b border-slate-200 flex justify-between items-center">
                   <div className="text-sm text-slate-500">
@@ -708,7 +719,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Import CSV Modal */}
       {isImporting && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
           <div className="bg-white rounded-2xl w-full max-w-md p-6 shadow-2xl animate-in fade-in zoom-in duration-200">
@@ -750,7 +760,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Add Player Modal */}
       {isAdding && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
           <div className="bg-white rounded-2xl w-full max-w-md p-6 shadow-2xl animate-in fade-in zoom-in duration-200">
